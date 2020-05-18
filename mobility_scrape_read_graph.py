@@ -10,6 +10,43 @@ import os
 import urllib.request
 import fitz
 import json
+import numpy as np
+
+def parse_stream(stream):
+    data_raw = []
+    data_transformed = []
+    rotparams = None
+    npatches = 0
+    for line in stream.splitlines():
+        if line.endswith(" cm"):
+            # page 146 of https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/pdf_reference_archives/PDFReference.pdf
+            rotparams = list(map(float,line.split()[:-1]))
+            print(rotparams)
+        elif line.endswith(" l"):
+            x,y = list(map(float,line.split()[:2]))
+            a,b,c,d,e,f = rotparams
+            xp = a*x+c*y+e
+            yp = b*x+d*y+f
+            data_transformed.append([xp,yp])
+            data_raw.append([x,y])
+        elif line.endswith(" m"):
+            npatches += 1
+        else:
+            pass
+    data_raw = np.array(data_raw)
+    basex, basey = data_raw[-1]
+    good = False
+    if basex == 0.:
+        data_raw[:,1] = basey - data_raw[:,1]
+        data_raw[:,1] *= 100/60.
+        data_raw = data_raw[data_raw[:,1]!=0.]
+        if npatches == 1: good = True
+    return dict(data=np.array(data_transformed), npatches=npatches, good=good)
+
+
+
+
+
 
 class State(object):
 
@@ -46,8 +83,6 @@ class County(object):
     def finalize(self, keys, values):
         self.results = dict(zip(keys,values))
 state = 'Alabama'
-soto = County('Springfield', state)
-print(f'sdfsf{soto.name}')
 def percentage(numba):
     correct = (float(str(numba).split('%',1)[0].replace('+',''))/100)
     return correct
@@ -118,57 +153,78 @@ classstate = State(state)
 classstate.add_category('State')
 classstate.cat_value(classstate.name)
 for page in range(doc.pageCount):
-    pagetext = doc.getPageText(page)
-    lines = pagetext.splitlines()
-    locale = None
-    # if page > 1:
-    for line in lines:
-        if ('County' in line and not locale is None):
-            locale.add_category('Name')
-            locale.cat_value(locale.name)
-            locale.finalize(locale.categories, locale.category_vals)
-            county_list.append(locale.results)
-            locale = County(line, state)
-        elif 'County' in line and locale is None:
-            locale = County(line, state)
-        elif any(line.startswith(c) for c in cats):
-            try:
-                locale.add_category(line)
-            except AttributeError:
-                classstate.add_category(line)
-        elif 'compared to baseline' in line:
-            try:
-                locale.cat_value(percentage(line))
-            except AttributeError:
+    print(f'on page {page}')
+    goodplots = []
+    if page == 0:
+        # print(doc.getPageXObjectList(page))
+        # print(sorted(doc.getPageXObjectList(page), key=lambda x:int(x[1].replace("X",""))))
+        xrefs = sorted(doc.getPageXObjectList(page), key=lambda x:int(x[1].replace("X","")))
+        for i,xref in enumerate(xrefs):
+            print(f'just the tip {doc.xrefStream(xref[0]).decode()}')
+            stream = doc.xrefStream(xref[0]).decode()
+            print(stream)
+            info = parse_stream(stream)
+            if not info["good"]: 
                 continue
-        elif line == 'Not enough data for this date':
-            try:
-                locale.cat_value('NA')
-            except AttributeError:
-                classstate.cat_value('NA')
-            except ValueError:
-                print(f'heres the line {line}')
-        elif ('%' in line) and (len(classstate.category_vals)<len(classstate.categories)):
-            classstate.cat_value(percentage(line))
-        else:
-            continue
-    # see if we missed any county information
-    try:
-        locale.add_category('Name')
-        locale.cat_value(locale.name)
-        locale.finalize(locale.categories, locale.category_vals)
-        # attribute_list = []
-        # attribute_list.append(locale.name)
-        # attribute_list.append(locale.results)
-        county_list.append(locale.results)
-        # county_list.append(attribute_list)
-        locale = County(line, state)
-    except AttributeError:
-        print(f'no counties here')
-classstate.add_category('Counties')
-classstate.cat_value(county_list)
-classstate.finalize(classstate.categories, classstate.category_vals)
-state_list.append(classstate.results)
+            else:
+                goodplots.append(info)
+                print(f'info right here {info}')
+
+#     # print(len(goodplots))
+#     # print(goodplots)
+#     pagetext = doc.getPageText(page)
+#     lines = pagetext.splitlines()
+#     locale = None
+#     # if page > 1:
+#     for line in lines:
+#         if ('County' in line and not locale is None):
+#             locale.add_category('Name')
+#             locale.cat_value(locale.name)
+#             locale.finalize(locale.categories, locale.category_vals)
+#             county_list.append(locale.results)
+#             locale = County(line, state)
+#         elif 'County' in line and locale is None:
+#             locale = County(line, state)
+#         elif any(line.startswith(c) for c in cats):
+#             try:
+#                 locale.add_category(line)
+#             except AttributeError:
+#                 classstate.add_category(line)
+#         elif 'compared to baseline' in line:
+#             try:
+#                 locale.cat_value(percentage(line))
+#             except AttributeError:
+#                 continue
+#         elif line == 'Not enough data for this date':
+#             try:
+#                 locale.cat_value('NA')
+#             except AttributeError:
+#                 classstate.cat_value('NA')
+#             except ValueError:
+#                 print(f'heres the line {line}')
+#         elif ('%' in line) and (len(classstate.category_vals)<len(classstate.categories)):
+#             classstate.cat_value(percentage(line))
+#         # elif line == 'Baseline':
+#         #     print(f'ok great {line}')
+#         else:
+#             continue
+#     # see if we missed any county information
+#     try:
+#         locale.add_category('Name')
+#         locale.cat_value(locale.name)
+#         locale.finalize(locale.categories, locale.category_vals)
+#         # attribute_list = []
+#         # attribute_list.append(locale.name)
+#         # attribute_list.append(locale.results)
+#         county_list.append(locale.results)
+#         # county_list.append(attribute_list)
+#         locale = County(line, state)
+#     except AttributeError:
+#         print(f'no counties here')
+# classstate.add_category('Counties')
+# classstate.cat_value(county_list)
+# classstate.finalize(classstate.categories, classstate.category_vals)
+# state_list.append(classstate.results)
     # else:
     #     for line in lines:
     #         if ('County' in line and not locale is None):
@@ -191,6 +247,6 @@ state_list.append(classstate.results)
     #             continue
 
 
-with open('test.json', 'w') as outfile:
-    json.dump(state_list, outfile)
+# with open('test.json', 'w') as outfile:
+#     json.dump(state_list, outfile)
 
